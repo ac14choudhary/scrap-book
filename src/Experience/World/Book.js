@@ -27,6 +27,15 @@ export default class Book {
 
         this.setMaterials()
         this.setMesh()
+        this.userHasInteracted = false
+        this.setupGestures()
+
+        // Auto-Flip to First Page after 3 seconds (Only if no interaction)
+        setTimeout(() => {
+            if (!this.userHasInteracted) {
+                this.turnNext()
+            }
+        }, 3000)
     }
 
     setMaterials() {
@@ -93,6 +102,39 @@ export default class Book {
         // Center it
         // geometry.translate(width / 2, 0, 0)
         return geometry
+    }
+
+    createPageNumberMesh(number) {
+        const canvas = document.createElement('canvas')
+        canvas.width = 128
+        canvas.height = 128
+        const ctx = canvas.getContext('2d')
+
+        // Clear (Transparent)
+        ctx.clearRect(0, 0, 128, 128)
+
+        // Text Style
+        ctx.fillStyle = '#555555'
+        ctx.font = '300 24px "Futura", "Century Gothic", "Tw Cen MT", "Arial", sans-serif' // Light Geometric
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+
+        // Draw Number
+        ctx.fillText(number.toString(), 64, 64)
+
+        const tex = new THREE.CanvasTexture(canvas)
+        tex.colorSpace = THREE.SRGBColorSpace
+
+        const mat = new THREE.MeshBasicMaterial({
+            map: tex,
+            transparent: true,
+            side: THREE.FrontSide
+        })
+
+        const geo = new THREE.PlaneGeometry(0.5, 0.5)
+        const mesh = new THREE.Mesh(geo, mat)
+
+        return mesh
     }
 
     createHoleyGeometry(width, height, thickness, holeCount, holeRadius, holeMargin) {
@@ -340,6 +382,30 @@ export default class Book {
                 backMat.needsUpdate = true
             }
 
+            // --- PAGE NUMBERS ---
+            // Front Page Number (Odd: 1, 3, 5...)
+            // Bottom Right (Outer Edge)
+            const numFront = (i * 2) + 1
+            const numFrontMesh = this.createPageNumberMesh(numFront)
+
+            // X: Start + Width - margin. Y: Bottom - margin
+            numFrontMesh.position.set(r + cWidth - 0.25, -(this.params.height / 2) + 0.25, (this.params.pageThickness / 2) + 0.001)
+
+            numFrontMesh.userData = { parentPivot: pPivot }
+            pPivot.add(numFrontMesh)
+
+            // Back Page Number (Even: 2, 4, 6...)
+            // Bottom Left (Outer Edge) when viewed from back
+            const numBack = (i * 2) + 2
+            const numBackMesh = this.createPageNumberMesh(numBack)
+            numBackMesh.rotation.y = Math.PI
+
+            // X: Outer Edge.
+            numBackMesh.position.set(r + cWidth - 0.25, -(this.params.height / 2) + 0.25, -(this.params.pageThickness / 2) - 0.001)
+
+            numBackMesh.userData = { parentPivot: pPivot }
+            pPivot.add(numBackMesh)
+
             // Setup state
             pPivot.userData = {
                 isPage: true,
@@ -428,6 +494,8 @@ export default class Book {
 
     interact(intersect) {
         if (!intersect || !intersect.object) return
+
+        this.userHasInteracted = true // Cancel Auto-Flip
 
         const obj = intersect.object
         const parentPivot = obj.userData.parentPivot || (obj.userData.isCover ? obj.userData.pivot : null)
@@ -579,6 +647,69 @@ export default class Book {
 
             pivot.userData.isTurned = false
         }
+    }
+
+    // --- GESTURES ---
+
+    turnNext() {
+        if (this.frontCoverPivot.userData.isAnimating || this.pages.some(p => p.userData.isAnimating)) return
+
+        // 1. Cover
+        if (!this.frontCoverPivot.userData.isTurned) {
+            this.turnCover(this.frontCoverPivot)
+            return
+        }
+
+        // 2. Pages
+        // Find first page that is NOT turned
+        const pageToTurn = this.pages.find(p => !p.userData.isTurned)
+        if (pageToTurn) {
+            this.turnPage(pageToTurn)
+        }
+    }
+
+    turnPrev() {
+        if (this.frontCoverPivot.userData.isAnimating || this.pages.some(p => p.userData.isAnimating)) return
+
+        // 1. Pages
+        // Find last page that IS turned
+        const reversed = [...this.pages].reverse()
+        const pageToTurnBack = reversed.find(p => p.userData.isTurned)
+
+        if (pageToTurnBack) {
+            this.turnPage(pageToTurnBack)
+            return
+        }
+
+        // 2. Cover
+        if (this.frontCoverPivot.userData.isTurned) {
+            this.turnCover(this.frontCoverPivot)
+        }
+    }
+
+    setupGestures() {
+        let lastScroll = 0
+        const cooldown = 800 // ms
+
+        window.addEventListener('wheel', (e) => {
+            const now = Date.now()
+            if (now - lastScroll < cooldown) return
+
+            // Horizontal Swipe
+            // Trackpad: Two fingers LEFT (Scroll Right) -> deltaX > 0 -> Next Page
+            // Trackpad: Two fingers RIGHT (Scroll Left) -> deltaX < 0 -> Prev Page
+
+            if (Math.abs(e.deltaX) > 20) { // Threshold
+                this.userHasInteracted = true // Cancel Auto-Flip
+
+                if (e.deltaX > 0) {
+                    this.turnNext()
+                } else {
+                    this.turnPrev()
+                }
+                lastScroll = now
+            }
+        }, { passive: true })
     }
 
     update() {

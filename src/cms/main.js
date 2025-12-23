@@ -36,6 +36,48 @@ let pages = getPages()
 
 const app = document.querySelector('#cms-app')
 
+// --- MODAL SYSTEM ---
+function createModalSystem() {
+    const modalHTML = `
+        <div class="modal-overlay" id="delete-modal">
+            <div class="modal-box">
+                <div class="modal-title">Delete Page?</div>
+                <div class="modal-text" id="modal-msg"></div>
+                <div class="modal-actions">
+                    <button class="btn-modal cancel" id="modal-cancel">Cancel</button>
+                    <button class="btn-modal confirm-danger" id="modal-confirm">Delete</button>
+                </div>
+            </div>
+        </div>
+    `
+    document.body.insertAdjacentHTML('beforeend', modalHTML)
+}
+createModalSystem()
+
+const modalOverlay = document.getElementById('delete-modal')
+const modalMsg = document.getElementById('modal-msg')
+const modalBtnConfirm = document.getElementById('modal-confirm')
+const modalBtnCancel = document.getElementById('modal-cancel')
+
+let pendingConfirmAction = null
+
+function showConfirmModal(message, onConfirm) {
+    modalMsg.textContent = message
+    pendingConfirmAction = onConfirm
+    modalOverlay.classList.add('open')
+}
+
+function hideModal() {
+    modalOverlay.classList.remove('open')
+    pendingConfirmAction = null
+}
+
+modalBtnCancel.addEventListener('click', hideModal)
+modalBtnConfirm.addEventListener('click', () => {
+    if (pendingConfirmAction) pendingConfirmAction()
+    hideModal()
+})
+
 // Initial Layout
 app.innerHTML = `
     <div class="cms-container">
@@ -48,9 +90,6 @@ app.innerHTML = `
             <div class="sidebar-actions">
                 <button id="btn-add-page" class="action-btn">
                     <span>+</span> Add Page
-                </button>
-                <button id="btn-remove-page" class="action-btn danger">
-                    <span>-</span> Pop Last
                 </button>
             </div>
 
@@ -98,8 +137,64 @@ function deletePageLogic(idToDelete) {
     const index = parseInt(idToDelete.replace('page-', ''))
     if (isNaN(index)) return
 
-    if (!confirm(`Are you sure you want to delete Page ${index}? This will shift all subsequent pages down.`)) return
+    showConfirmModal(
+        `Are you sure you want to delete Page ${index}? This will shift down all subsequent pages.`,
+        () => {
+            // EXECUTE DELETE
+            // 1. Shift Keys Down
+            for (let i = index; i < pageCount; i++) {
+                const currentId = `page-${i}`
+                const nextId = `page-${i + 1}`
 
+                // Shift Front
+                const splitFront = localStorage.getItem(`texture_${nextId}-front`)
+                if (splitFront) {
+                    localStorage.setItem(`texture_${currentId}-front`, splitFront)
+                } else {
+                    localStorage.removeItem(`texture_${currentId}-front`)
+                }
+
+                // Shift Back
+                const splitBack = localStorage.getItem(`texture_${nextId}-back`)
+                if (splitBack) {
+                    localStorage.setItem(`texture_${currentId}-back`, splitBack)
+                } else {
+                    localStorage.removeItem(`texture_${currentId}-back`)
+                }
+            }
+
+            // 2. Remove last page's keys
+            const lastId = `page-${pageCount}`
+            localStorage.removeItem(`texture_${lastId}-front`)
+            localStorage.removeItem(`texture_${lastId}-back`)
+
+            // 3. Update Count
+            pageCount--
+            saveConfig()
+
+            // 4. Refresh
+            pages = getPages()
+            let newIndex = Math.min(index, pageCount)
+            if (newIndex < 1) newIndex = 1
+
+            renderPageList()
+
+            if (pageCount > 0) {
+                const newId = `page-${newIndex}`
+                const newItem = document.querySelector(`.nav-item[data-id="${newId}"]`)
+                if (newItem) {
+                    newItem.classList.add('active')
+                    selectPage(newId)
+                }
+            } else {
+                workspaceEl.innerHTML = '<p class="placeholder">No pages left. Add one!</p>'
+            }
+            updateFooter()
+        }
+    )
+}
+// END Modal Logic wrapper - skipping original confirm Logic which will be replaced by above
+function _ignored_() {
     // 1. Shift Keys Down
     for (let i = index; i < pageCount; i++) {
         const currentId = `page-${i}`
@@ -160,19 +255,6 @@ btnAdd.addEventListener('click', () => {
     pages = getPages()
     renderPageList()
     updateFooter()
-})
-
-btnRemove.addEventListener('click', () => {
-    // Legacy support: Pop last
-    if (pageCount > 1) {
-        pageCount--
-        saveConfig()
-        pages = getPages()
-        renderPageList()
-        updateFooter()
-    } else {
-        alert("Cannot have fewer than 1 page.")
-    }
 })
 
 function renderPageList(activeId = null) {

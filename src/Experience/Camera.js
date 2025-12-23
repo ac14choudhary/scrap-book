@@ -22,6 +22,38 @@ export default class Camera {
     setControls() {
         this.controls = new OrbitControls(this.instance, this.canvas)
         this.controls.enableDamping = true
+
+        // Custom Gesture Logic:
+        // Default: Zoom Enabled.
+        // We only DISABLE it if we detect a "Vertical Swipe" that is NOT a Pinch.
+        this.controls.enableZoom = true
+
+        this.canvas.addEventListener('wheel', (e) => {
+            e.preventDefault() // prevent page scroll just in case
+
+            const isPinch = e.ctrlKey || e.metaKey
+            const isVertical = Math.abs(e.deltaY) > Math.abs(e.deltaX)
+
+            if (!isPinch && isVertical) {
+                // Block Zoom for Vertical Swipes
+                this.controls.enableZoom = false
+            } else {
+                // Allow Zoom for Pinch or minor movements
+                this.controls.enableZoom = true
+            }
+        }, { capture: true })
+
+        // Safari Gesture Support (Pinch)
+        this.canvas.addEventListener('gesturestart', (e) => {
+            e.preventDefault()
+            this.controls.enableZoom = true
+        })
+        this.canvas.addEventListener('gesturechange', (e) => {
+            e.preventDefault()
+        })
+        this.canvas.addEventListener('gestureend', (e) => {
+            this.controls.enableZoom = true
+        })
     }
 
     resize() {
