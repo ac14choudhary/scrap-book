@@ -53,7 +53,7 @@ export default class Experience {
         window.addEventListener('click', () => {
             if (this.currentIntersect) {
                 if (this.world.book)
-                    this.world.book.open()
+                    this.world.book.interact(this.currentIntersect)
             }
         })
     }

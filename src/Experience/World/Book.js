@@ -13,12 +13,12 @@ export default class Book {
             width: 3.5,
             height: 5,
             coverThickness: 0.05,
-            pageThickness: 0.02,
+            pageThickness: 0.005,
             spiralRadius: 0.2,
             spiralSpacing: 0.25,
             wireThickness: 0.025,
             holeRadius: 0.08,
-            holeMargin: 0.2,
+            holeMargin: 0.15,
             isOpen: false
         }
 
@@ -41,6 +41,10 @@ export default class Book {
         if (this.experience.resources.items.pageTexture) {
             textures.page = this.experience.resources.items.pageTexture
             textures.page.colorSpace = THREE.SRGBColorSpace
+            textures.page.wrapS = THREE.RepeatWrapping
+            textures.page.wrapT = THREE.RepeatWrapping
+            textures.page.repeat.set(1, 1)
+            textures.page.anisotropy = this.experience.renderer.instance.capabilities.getMaxAnisotropy()
         }
 
         this.coverMaterial = new THREE.MeshStandardMaterial({
@@ -51,9 +55,12 @@ export default class Book {
         })
 
         this.pageMaterial = new THREE.MeshStandardMaterial({
-            map: textures.page || null,
+            map: null,
+            bumpMap: textures.page || null,
+            bumpScale: 0.05,
             color: '#ffffff',
-            roughness: 0.6,
+            roughness: 0.9,
+            metalness: 0,
             side: THREE.DoubleSide
         })
 
@@ -148,7 +155,7 @@ export default class Book {
 
         // --- STACKING VIA ROTATION ONLY ---
         const r = this.params.spiralRadius
-        const pageCount = 5
+        const pageCount = 15
         const angularSpacing = 0.08
 
         let currentAngle = -((pageCount + 2) * angularSpacing) / 2
@@ -161,6 +168,10 @@ export default class Book {
         this.frontCover = new THREE.Mesh(coverGeo, this.coverMaterial)
         this.frontCover.position.set(r, 0, 0)
         this.frontCoverPivot.add(this.frontCover)
+
+        // userData to identify
+        this.frontCover.userData = { isCover: true, isFront: true, pivot: this.frontCoverPivot }
+        this.frontCoverPivot.userData = { isTurned: false, baseAngle: currentAngle }
 
         currentAngle += angularSpacing * 1.5
 
@@ -175,6 +186,15 @@ export default class Book {
             const pMesh = new THREE.Mesh(pageGeo, this.pageMaterial)
             pMesh.position.set(r, 0, 0)
             pPivot.add(pMesh)
+
+            // Setup state
+            pPivot.userData = {
+                isPage: true,
+                isTurned: false,
+                index: i,
+                baseAngle: currentAngle
+            }
+            pMesh.userData = { parentPivot: pPivot }
 
             this.pages.push(pPivot)
 
@@ -194,44 +214,129 @@ export default class Book {
         this.backCover = new THREE.Mesh(coverGeo, this.coverMaterial)
         this.backCover.position.set(r, 0, 0)
         this.backCoverPivot.add(this.backCover)
+        this.backCover.userData = { isCover: true, isBack: true }
     }
 
-    // REMOVED helper methods for content
+    interact(intersect) {
+        if (!intersect || !intersect.object) return
 
-    open() {
-        if (this.isOpen) return
-        this.isOpen = true
+        const obj = intersect.object
+        const parentPivot = obj.userData.parentPivot || (obj.userData.isCover ? obj.userData.pivot : null)
 
-        const tl = gsap.timeline()
-        const openAngle = -Math.PI + 0.1
+        // Handle Front Cover
+        if (obj.userData.isFront) {
+            this.turnCover(this.frontCoverPivot)
+            return
+        }
 
-        // 1. Flip Front Cover
-        tl.to(this.frontCoverPivot.rotation, {
-            duration: 1.5,
-            y: openAngle,
-            ease: 'power2.inOut'
-        }, 'start')
+        // Handle Pages
+        if (parentPivot && parentPivot.userData.isPage) {
+            this.turnPage(parentPivot)
+        }
+    }
 
-        // 2. Camera Move
-        tl.to(this.group.rotation, {
-            duration: 1.5,
-            x: -Math.PI / 4 + 0.2,
-            y: 0,
-            ease: 'power2.out'
-        }, 'start')
+    turnCover(pivot) {
+        const isTurned = pivot.userData.isTurned
 
-        // 3. Flip Pages
-        this.pages.forEach((p, i) => {
-            if (i < this.pages.length / 2) {
-                const targetAngle = openAngle + ((this.pages.length / 2 - i) * 0.08) + 0.1
+        if (!isTurned) {
+            // Opening cover
+            const targetAngle = -Math.PI + 0.1
+            gsap.to(pivot.rotation, {
+                duration: 1.5,
+                y: targetAngle,
+                ease: 'power2.inOut'
+            })
+            pivot.userData.isTurned = true
 
-                tl.to(p.rotation, {
-                    duration: 1.0,
-                    y: targetAngle,
-                    ease: 'power2.inOut'
-                }, '>-0.8')
+            // Animate camera
+            gsap.to(this.group.rotation, {
+                duration: 1.5,
+                x: -Math.PI / 4 + 0.2,
+                y: 0,
+                ease: 'power2.out'
+            })
+        } else {
+            // Closing cover - Check if pages are open
+            const anyPageTurned = this.pages.some(p => p.userData.isTurned)
+            if (anyPageTurned) {
+                return
             }
-        })
+
+            gsap.to(pivot.rotation, {
+                duration: 1.5,
+                y: pivot.userData.baseAngle,
+                ease: 'power2.inOut'
+            })
+            pivot.userData.isTurned = false
+        }
+    }
+
+    turnPage(pivot) {
+        const index = pivot.userData.index
+        const isTurned = pivot.userData.isTurned
+
+        // Revised Open Angle to keep it "in spiral"
+        const openAngleBase = -Math.PI + 0.25
+
+        if (!isTurned) {
+            // Turning LEFT (Opening)
+            // stack: Cover -> 0 -> 1 -> ... -> N
+            // 0 is Top.
+            // Constraint: Can only turn 'index' if 'index - 1' is already turned.
+            if (index > 0) {
+                const prevPage = this.pages[index - 1]
+                if (!prevPage.userData.isTurned) {
+                    return // Block: Must turn previous page first
+                }
+            } else {
+                // Index 0: Check Cover
+                if (!this.frontCoverPivot.userData.isTurned) {
+                    return
+                }
+            }
+
+            const targetAngle = openAngleBase + (index * 0.005)
+
+            gsap.to(pivot.rotation, {
+                duration: 1.2,
+                y: targetAngle,
+                ease: 'power2.inOut'
+            })
+            pivot.userData.isTurned = true
+
+        } else {
+            // Turning RIGHT (Closing)
+            // Stack Left: N -> ... -> 1 -> 0 -> Cover
+            // N is Bottom Left. 0 is Top Left?
+            // If I turned 0, then 1, then 2.
+            // 0 is at bottom of left stack?
+            // "Open Angle Base".
+            // 0: base + offset.
+            // 1: base + smaller offset.
+            // So 0 is "more negative" (Left).
+            // 2 is "less negative" (Right/Top of Left Stack).
+            // So on Left Stack: High Index is Top.
+            // So to close, I must close Top first. (High Index).
+            // So to close 'index', 'index + 1' must NOT be turned?
+            // If 2 is turned. I want to close 1.
+            // 2 is on top of 1.
+            // So I must close 2 first.
+            // So if (index+1) is Turned, I cannot close 'index'.
+
+            if (index < this.pages.length - 1) {
+                const nextPage = this.pages[index + 1]
+                if (nextPage.userData.isTurned) {
+                    return // Block: Page above me (Left) is still here.
+                }
+            }
+
+            gsap.to(pivot.rotation, {
+                duration: 1.2,
+                y: pivot.userData.baseAngle,
+                ease: 'power2.inOut'
+            })
+            pivot.userData.isTurned = false
+        }
     }
 
     update() {
