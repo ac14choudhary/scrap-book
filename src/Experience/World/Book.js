@@ -64,11 +64,35 @@ export default class Book {
             side: THREE.DoubleSide
         })
 
+        // --- CHECK LOCAL STORAGE FOR OVERRIDES ---
+        // Cover Front
+        const savedFront = localStorage.getItem('texture_cover-front')
+        if (savedFront) {
+            const tex = new THREE.TextureLoader().load(savedFront)
+            tex.colorSpace = THREE.SRGBColorSpace
+            tex.wrapS = THREE.RepeatWrapping
+            tex.wrapT = THREE.RepeatWrapping
+            this.coverMaterial.map = tex
+            this.coverMaterial.needsUpdate = true
+        }
+
+        // We need unique materials for pages if they have unique textures
+        // Currently all pages share `this.pageMaterial`. 
+        // We will need to clone materials for specific pages in `setMesh`.
+
         this.spiralMaterial = new THREE.MeshStandardMaterial({
             color: '#333333',
             metalness: 0.6,
             roughness: 0.4
         })
+    }
+
+    createContentPlane(width, height) {
+        // Create a plane that fits within the page margins (avoiding the holes)
+        const geometry = new THREE.PlaneGeometry(width, height)
+        // Center it
+        // geometry.translate(width / 2, 0, 0)
+        return geometry
     }
 
     createHoleyGeometry(width, height, thickness, holeCount, holeRadius, holeMargin) {
@@ -155,7 +179,18 @@ export default class Book {
 
         // --- STACKING VIA ROTATION ONLY ---
         const r = this.params.spiralRadius
-        const pageCount = 15
+
+        // Dynamic Page Count
+        let pageCount = 15
+        try {
+            const config = JSON.parse(localStorage.getItem('book_config'))
+            if (config && config.pageCount) {
+                pageCount = config.pageCount
+            }
+        } catch (e) {
+            console.warn('Could not load book config, defaulting to 15 pages.')
+        }
+
         const angularSpacing = 0 // CLOSED COMPLETELY (Flat)
 
         let currentAngle = -((pageCount + 2) * angularSpacing) / 2
@@ -169,6 +204,54 @@ export default class Book {
         this.frontCover = new THREE.Mesh(coverGeo, this.coverMaterial)
         this.frontCover.position.set(r, 0, 0)
         this.frontCoverPivot.add(this.frontCover)
+
+        // --- FRONT COVER CONTENT PLANES ---
+        const cWidth = this.params.width - this.params.holeMargin
+        const cHeight = this.params.height
+        const planeGeo = this.createContentPlane(cWidth, cHeight)
+
+        // Front (Outside) 
+        const frontMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff, transparent: true, opacity: 0, side: THREE.FrontSide
+        })
+        const frontPlane = new THREE.Mesh(planeGeo, frontMat)
+        // Z = coverThickness/2 + epsilon
+        frontPlane.position.set(r + (cWidth / 2), 0, (this.params.coverThickness / 2) + 0.0005)
+        // Raycast Fix:
+        frontPlane.userData = { isCover: true, isFront: true, pivot: this.frontCoverPivot }
+        this.frontCoverPivot.add(frontPlane)
+
+        // Back (Inside)
+        const backMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff, transparent: true, opacity: 0, side: THREE.FrontSide
+        })
+        const backPlane = new THREE.Mesh(planeGeo, backMat)
+        backPlane.rotation.y = Math.PI
+        backPlane.position.set(r + (cWidth / 2), 0, -(this.params.coverThickness / 2) - 0.0005)
+        // Raycast Fix:
+        backPlane.userData = { isCover: true, isFront: true, pivot: this.frontCoverPivot }
+        this.frontCoverPivot.add(backPlane)
+
+        // Load Textures
+        const id = 'cover-front'
+        const savedFront = localStorage.getItem(`texture_${id}-front`)
+        const savedBack = localStorage.getItem(`texture_${id}-back`)
+
+        if (savedFront) {
+            const tex = new THREE.TextureLoader().load(savedFront)
+            tex.colorSpace = THREE.SRGBColorSpace
+            frontMat.map = tex
+            frontMat.opacity = 1
+            frontMat.needsUpdate = true
+        }
+
+        if (savedBack) {
+            const tex = new THREE.TextureLoader().load(savedBack)
+            tex.colorSpace = THREE.SRGBColorSpace
+            backMat.map = tex
+            backMat.opacity = 1
+            backMat.needsUpdate = true
+        }
 
         // userData to identify
         this.frontCover.userData = { isCover: true, isFront: true, pivot: this.frontCoverPivot }
@@ -189,18 +272,73 @@ export default class Book {
             const pPivot = new THREE.Group()
 
             // Offset Z to stack pages physically (Negative direction)
+            // Offset Z to stack pages physically (Negative direction)
             const pZ = currentZ - (this.params.pageThickness / 2)
             pPivot.position.set(0, 0, pZ)
-
             pPivot.rotation.y = currentAngle
             this.bookContainer.add(pPivot)
 
-            // Decrement Z for next page
             currentZ -= this.params.pageThickness
 
+            // 1. BASE PAPER MESH
             const pMesh = new THREE.Mesh(pageGeo, this.pageMaterial)
             pMesh.position.set(r, 0, 0)
             pPivot.add(pMesh)
+
+            // 2. CONTENT PLANES (Dual Sided)
+            // Printable area: width - margin. Height - margin
+            const cWidth = this.params.width - 0.1 - this.params.holeMargin
+            const cHeight = this.params.height - 0.1
+            const planeGeo = this.createContentPlane(cWidth, cHeight)
+
+            // Front Content (Offset +Z)
+            const frontMat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0,
+                side: THREE.FrontSide
+            })
+            const frontPlane = new THREE.Mesh(planeGeo, frontMat)
+            // Center X = r + (cWidth/2). Z = Thickness/2 + epsilon
+            frontPlane.position.set(r + (cWidth / 2), 0, (this.params.pageThickness / 2) + 0.0005)
+            // Raycast Fix:
+            frontPlane.userData = { parentPivot: pPivot }
+            pPivot.add(frontPlane)
+
+            // Back Content (Offset -Z, Flipped)
+            const backMat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0,
+                side: THREE.FrontSide
+            })
+            const backPlane = new THREE.Mesh(planeGeo, backMat)
+            backPlane.rotation.y = Math.PI // Flip for back reading
+            backPlane.position.set(r + (cWidth / 2), 0, -(this.params.pageThickness / 2) - 0.0005)
+            // Raycast Fix:
+            backPlane.userData = { parentPivot: pPivot }
+            pPivot.add(backPlane)
+
+            // LOAD TEXTURES
+            const id = `page-${i + 1}`
+            const savedFront = localStorage.getItem(`texture_${id}-front`)
+            const savedBack = localStorage.getItem(`texture_${id}-back`)
+
+            if (savedFront) {
+                const tex = new THREE.TextureLoader().load(savedFront)
+                tex.colorSpace = THREE.SRGBColorSpace
+                frontMat.map = tex
+                frontMat.opacity = 1
+                frontMat.needsUpdate = true
+            }
+
+            if (savedBack) {
+                const tex = new THREE.TextureLoader().load(savedBack)
+                tex.colorSpace = THREE.SRGBColorSpace
+                backMat.map = tex
+                backMat.opacity = 1
+                backMat.needsUpdate = true
+            }
 
             // Setup state
             pPivot.userData = {
@@ -233,6 +371,58 @@ export default class Book {
         this.backCover = new THREE.Mesh(coverGeo, this.coverMaterial)
         this.backCover.position.set(r, 0, 0)
         this.backCoverPivot.add(this.backCover)
+
+        // --- BACK COVER CONTENT PLANES ---
+        const bWidth = this.params.width - this.params.holeMargin
+        const bHeight = this.params.height
+        const bPlaneGeo = this.createContentPlane(bWidth, bHeight)
+
+        // Front (Inside the Book)
+        const bFrontMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff, transparent: true, opacity: 0, side: THREE.FrontSide
+        })
+        const bFrontPlane = new THREE.Mesh(bPlaneGeo, bFrontMat)
+        // Z = coverThickness/2 + epsilon
+        bFrontPlane.position.set(r + (bWidth / 2), 0, (this.params.coverThickness / 2) + 0.0005)
+        // Raycast Fix: Note use of isBack: true
+        bFrontPlane.userData = { isCover: true, isBack: true, pivot: this.backCoverPivot }
+        this.backCoverPivot.add(bFrontPlane)
+
+        // Back (Outside Back Cover)
+        const bBackMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff, transparent: true, opacity: 0, side: THREE.FrontSide
+        })
+        const bBackPlane = new THREE.Mesh(bPlaneGeo, bBackMat)
+        bBackPlane.rotation.y = Math.PI
+        bBackPlane.position.set(r + (bWidth / 2), 0, -(this.params.coverThickness / 2) - 0.0005)
+        // Raycast Fix:
+        bBackPlane.userData = { isCover: true, isBack: true, pivot: this.backCoverPivot }
+        this.backCoverPivot.add(bBackPlane)
+
+        // LOAD TEXTURES
+        const bId = 'cover-back'
+        const bSavedFront = localStorage.getItem(`texture_${bId}-front`)
+        const bSavedBack = localStorage.getItem(`texture_${bId}-back`)
+
+        // Legacy fallback
+        const bLegacy = localStorage.getItem(`texture_${bId}`)
+
+        if (bSavedFront || (bLegacy && !bSavedFront)) {
+            const tex = new THREE.TextureLoader().load(bSavedFront || bLegacy)
+            tex.colorSpace = THREE.SRGBColorSpace
+            bFrontMat.map = tex
+            bFrontMat.opacity = 1
+            bFrontMat.needsUpdate = true
+        }
+
+        if (bSavedBack) {
+            const tex = new THREE.TextureLoader().load(bSavedBack)
+            tex.colorSpace = THREE.SRGBColorSpace
+            bBackMat.map = tex
+            bBackMat.opacity = 1
+            bBackMat.needsUpdate = true
+        }
+
         this.backCover.userData = { isCover: true, isBack: true }
     }
 
