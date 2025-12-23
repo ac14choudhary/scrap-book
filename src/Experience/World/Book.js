@@ -156,11 +156,12 @@ export default class Book {
         // --- STACKING VIA ROTATION ONLY ---
         const r = this.params.spiralRadius
         const pageCount = 15
-        const angularSpacing = 0.08
+        const angularSpacing = 0 // CLOSED COMPLETELY (Flat)
 
         let currentAngle = -((pageCount + 2) * angularSpacing) / 2
 
         this.frontCoverPivot = new THREE.Group()
+        // Revert static offset: Start at natural 0 position
         this.frontCoverPivot.position.set(0, 0, 0)
         this.frontCoverPivot.rotation.y = currentAngle
         this.bookContainer.add(this.frontCoverPivot)
@@ -177,11 +178,25 @@ export default class Book {
 
         // Pages
         this.pages = []
+
+        // Stacking Calculation (NEGATIVE Z)
+        // Cover is at 0 (From -thick/2 to +thick/2)
+        // We want pages BEHIND the cover (Negative Z) so when flipped they come ON TOP.
+        // Start from -coverThickness/2
+        let currentZ = -this.params.coverThickness / 2
+
         for (let i = 0; i < pageCount; i++) {
             const pPivot = new THREE.Group()
-            pPivot.position.set(0, 0, 0)
+
+            // Offset Z to stack pages physically (Negative direction)
+            const pZ = currentZ - (this.params.pageThickness / 2)
+            pPivot.position.set(0, 0, pZ)
+
             pPivot.rotation.y = currentAngle
             this.bookContainer.add(pPivot)
+
+            // Decrement Z for next page
+            currentZ -= this.params.pageThickness
 
             const pMesh = new THREE.Mesh(pageGeo, this.pageMaterial)
             pMesh.position.set(r, 0, 0)
@@ -207,7 +222,11 @@ export default class Book {
 
         // Back Cover
         this.backCoverPivot = new THREE.Group()
-        this.backCoverPivot.position.set(0, 0, 0)
+
+        // Back Cover sits BEHIND the last page
+        const backCoverZ = currentZ - (this.params.coverThickness / 2)
+        this.backCoverPivot.position.set(0, 0, backCoverZ)
+
         this.backCoverPivot.rotation.y = currentAngle
         this.bookContainer.add(this.backCoverPivot)
 
@@ -240,12 +259,23 @@ export default class Book {
 
         if (!isTurned) {
             // Opening cover
-            const targetAngle = -Math.PI + 0.1
+            // Use a wider angle to ensure pages don't clip through
+            const openAngle = -Math.PI - 0.2
+
+            // Rotate Cover
             gsap.to(pivot.rotation, {
                 duration: 1.5,
-                y: targetAngle,
+                y: openAngle,
                 ease: 'power2.inOut'
             })
+
+            // Dynamic Offset: Move Pivot DOWN/BACK to clear pages when open
+            gsap.to(pivot.position, {
+                duration: 1.5,
+                z: -0.1, // Move to requested offset
+                ease: 'power2.inOut'
+            })
+
             pivot.userData.isTurned = true
 
             // Animate camera
@@ -267,6 +297,14 @@ export default class Book {
                 y: pivot.userData.baseAngle,
                 ease: 'power2.inOut'
             })
+
+            // Reset Position
+            gsap.to(pivot.position, {
+                duration: 1.5,
+                z: 0,
+                ease: 'power2.inOut'
+            })
+
             pivot.userData.isTurned = false
         }
     }
@@ -275,13 +313,12 @@ export default class Book {
         const index = pivot.userData.index
         const isTurned = pivot.userData.isTurned
 
-        // Revised Open Angle to keep it "in spiral"
-        const openAngleBase = -Math.PI + 0.25
+        const openAngleBase = -Math.PI - 0.2 // SAME as cover
 
         if (!isTurned) {
             // Turning LEFT (Opening)
             // stack: Cover -> 0 -> 1 -> ... -> N
-            // 0 is Top.
+
             // Constraint: Can only turn 'index' if 'index - 1' is already turned.
             if (index > 0) {
                 const prevPage = this.pages[index - 1]
@@ -295,34 +332,32 @@ export default class Book {
                 }
             }
 
-            const targetAngle = openAngleBase + (index * 0.005)
+            // Very tiny offset to prevent z-fighting, or 0 if desired.
+            const targetAngle = openAngleBase + (index * 0.001)
 
             gsap.to(pivot.rotation, {
                 duration: 1.2,
                 y: targetAngle,
                 ease: 'power2.inOut'
             })
+
+            // Re-stack Z for Left Side
+            // On Right: Z is negative increasing (0 -> -0.05)
+            // On Left: We want them to stack UP relative to Cover?
+            // Page 0 should be at Z=0 (on top of cover). Page 1 at Z=0.005.
+            // Let's bring them to Positive Z to sit on top of the rotated cover.
+            const newZ = (index + 1) * 0.005 // Simple stacking
+
+            gsap.to(pivot.position, {
+                duration: 1.2,
+                z: newZ,
+                ease: 'power2.inOut'
+            })
+
             pivot.userData.isTurned = true
 
         } else {
             // Turning RIGHT (Closing)
-            // Stack Left: N -> ... -> 1 -> 0 -> Cover
-            // N is Bottom Left. 0 is Top Left?
-            // If I turned 0, then 1, then 2.
-            // 0 is at bottom of left stack?
-            // "Open Angle Base".
-            // 0: base + offset.
-            // 1: base + smaller offset.
-            // So 0 is "more negative" (Left).
-            // 2 is "less negative" (Right/Top of Left Stack).
-            // So on Left Stack: High Index is Top.
-            // So to close, I must close Top first. (High Index).
-            // So to close 'index', 'index + 1' must NOT be turned?
-            // If 2 is turned. I want to close 1.
-            // 2 is on top of 1.
-            // So I must close 2 first.
-            // So if (index+1) is Turned, I cannot close 'index'.
-
             if (index < this.pages.length - 1) {
                 const nextPage = this.pages[index + 1]
                 if (nextPage.userData.isTurned) {
@@ -335,6 +370,23 @@ export default class Book {
                 y: pivot.userData.baseAngle,
                 ease: 'power2.inOut'
             })
+
+            // Restore Original Z (Negative Stacking)
+            // We need to calculate what the original Z was.
+            // It was: -coverThickness/2 - (index * pageThickness) - pageThickness/2
+            // Simplest is to store it in userData or recalculate.
+            // Recalculating:
+            // startZ = -0.025 - 0.0025 = -0.0275
+            // index 0: -0.0275
+            // index 1: -0.0325
+            const originalZ = -(this.params.coverThickness / 2) - (this.params.pageThickness / 2) - (index * this.params.pageThickness)
+
+            gsap.to(pivot.position, {
+                duration: 1.2,
+                z: originalZ,
+                ease: 'power2.inOut'
+            })
+
             pivot.userData.isTurned = false
         }
     }
